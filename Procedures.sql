@@ -1,0 +1,236 @@
+create or replace function Maior_Dezoito (Data_Nascimento date) return boolean is
+begin
+    RETURN MONTHS_BETWEEN(TRUNC(SYSDATE), TRUNC(Data_Nascimento)) >= 216;
+end Maior_Dezoito;
+/
+
+CREATE OR REPLACE PROCEDURE Fecha_Conta (Conta IN OUT Sessao%ROWTYPE) IS
+    Duracao_Horas      NUMBER;
+    V_SUBTOTAL         NUMBER := 0; -- Soma do Barco + Produtos
+    V_TOTAL_PRODUTOS   NUMBER := 0; 
+    V_VALOR_BARCO      NUMBER := 0;
+    
+    CURSOR cs_Sessao_Produto IS
+        SELECT Sessao_Produto.QNT, Sessao_Produto.VALOR_UNITARIO
+        FROM Sessao_Produto 
+        WHERE SESSAO_PRODUTO.ID_SESSAO = Conta.ID_SESSAO;
+BEGIN
+    Conta.Fim := SYSDATE;
+
+    FOR r_item IN cs_Sessao_Produto LOOP
+        V_TOTAL_PRODUTOS := V_TOTAL_PRODUTOS + (r_item.QNT * r_item.VALOR_UNITARIO);
+    END LOOP;
+
+    V_VALOR_BARCO := FN_PRECO_BARCO(Conta.ID_BARCO, Conta.Inicio, Conta.Fim);
+    
+    V_SUBTOTAL := V_VALOR_BARCO + V_TOTAL_PRODUTOS;
+    
+    Conta.Valor_Total := V_SUBTOTAL * (1 - (NVL(Conta.Desconto, 0) / 100));
+    
+    UPDATE Sessao
+    SET FIM = Conta.Fim,
+        VALOR_TOTAL = Conta.Valor_Total
+    WHERE ID_SESSAO = Conta.ID_SESSAO;
+
+END Fecha_Conta;
+/
+
+CREATE OR REPLACE PROCEDURE MOSTRA_PRODUTOS IS
+    CURSOR C_PRODUTOS IS
+        SELECT *
+        FROM PRODUTO_SERVICO;
+
+BEGIN
+
+    FOR R IN C_PRODUTOS LOOP
+
+        DBMS_OUTPUT.PUT_LINE(
+            'ID: ' || R.ID_PRODUTO ||
+            ' | PRODUTO: ' || R.NOME_PRODUTO_SERVICO ||
+            ' | PRECO: ' || R.PRECO ||
+            ' | ESTOQUE: ' || R.ESTOQUE);
+
+    END LOOP;
+
+END;
+/
+
+CREATE OR REPLACE PROCEDURE REAJUSTA_SALARIOS(P_REAJUSTE NUMBER)
+IS
+    CURSOR C_CARGOS IS
+        SELECT ID_CARGO
+        FROM CARGO;
+BEGIN
+    FOR R IN C_CARGOS LOOP
+        UPDATE CARGO
+        SET SALARIO =
+            SALARIO * (1 + P_REAJUSTE/100)
+        WHERE ID_CARGO = R.ID_CARGO;
+    END LOOP;
+
+END;
+/
+
+CREATE OR REPLACE PROCEDURE REAJUSTA_CARGO(P_ID_CARGO NUMBER,P_REAJUSTE NUMBER)
+IS
+BEGIN
+    UPDATE CARGO
+    SET SALARIO = SALARIO * (1 + P_REAJUSTE/100) WHERE ID_CARGO = P_ID_CARGO;
+END;
+/
+
+
+
+CREATE OR REPLACE PROCEDURE AVISO_REPOSICAO
+IS
+CURSOR C_ESTOQUE IS
+SELECT * FROM PRODUTO_SERVICO;
+BEGIN
+
+    FOR R IN C_ESTOQUE LOOP
+        IF R.ESTOQUE <= 5 THEN
+            DBMS_OUTPUT.PUT_LINE('REPOR PRODUTO: '|| R.NOME_PRODUTO_SERVICO|| ' ESTOQUE='|| R.ESTOQUE);
+        END IF;
+    END LOOP;
+END;
+/
+
+
+
+CREATE OR REPLACE PROCEDURE CANCELA_SESSAO(P_ID_SESSAO NUMBER)
+IS
+BEGIN
+
+    FOR R IN
+    (SELECT ID_PRODUTO,QNT FROM SESSAO_PRODUTO WHERE ID_SESSAO = P_ID_SESSAO)
+    LOOP
+        UPDATE PRODUTO_SERVICO
+        SET ESTOQUE = ESTOQUE + R.QNT
+        WHERE ID_PRODUTO = R.ID_PRODUTO;
+    END LOOP;
+    DELETE FROM SESSAO_PRODUTO
+    WHERE ID_SESSAO = P_ID_SESSAO;
+    DELETE FROM SESSAO
+    WHERE ID_SESSAO = P_ID_SESSAO;
+    COMMIT;
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        RAISE;
+END;
+/
+
+CREATE OR REPLACE PROCEDURE TRANSFERE_DONO(P_ID_BARCO NUMBER,P_NOVO_DONO NUMBER)
+IS
+    V_DONO_ANTIGO NUMBER;
+BEGIN
+
+    SELECT ID_DONO
+    INTO V_DONO_ANTIGO
+    FROM BARCO
+    WHERE ID_BARCO = P_ID_BARCO;
+
+    UPDATE BARCO
+    SET ID_DONO = P_NOVO_DONO
+    WHERE ID_BARCO = P_ID_BARCO;
+
+    UPDATE DONO
+    SET QNT_BARCOS = QNT_BARCOS - 1
+    WHERE ID_DONO = V_DONO_ANTIGO;
+
+    UPDATE DONO
+    SET QNT_BARCOS = QNT_BARCOS + 1
+    WHERE ID_DONO = P_NOVO_DONO;
+
+    COMMIT;
+
+END;
+/
+
+CREATE OR REPLACE PROCEDURE AUMENTA_ESTOQUE (P_ID_PRODUTO NUMBER, P_QNT NUMBER)
+IS
+    V_EXISTE NUMBER;
+    PROD_NAO_ENCONTRADO EXCEPTION;
+    QNT_MENOR_ZERO EXCEPTION;
+BEGIN
+    -- Validação: Verifica se o produto realmente existe no banco
+    SELECT COUNT(*)
+    INTO V_EXISTE
+    FROM PRODUTO_SERVICO
+    WHERE ID_PRODUTO = P_ID_PRODUTO;
+
+    IF V_EXISTE = 0 THEN
+        RAISE QNT_MENOR_ZERO;
+    END IF;
+
+    -- Validação: Impede que passem uma quantidade negativa ou zero por parâmetro
+    IF P_QNT <= 0 THEN
+        RAISE PROD_NAO_ENCONTRADO;
+    END IF;
+
+    -- Executa a atualização do estoque
+    UPDATE PRODUTO_SERVICO
+    SET ESTOQUE = ESTOQUE + P_QNT
+    WHERE ID_PRODUTO = P_ID_PRODUTO;
+
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('ESTOQUE ATUALIZADO COM SUCESSO PARA O PRODUTO ID: ' || P_ID_PRODUTO);
+
+EXCEPTION
+    WHEN PROD_NAO_ENCONTRADO THEN
+        RAISE_APPLICATION_ERROR(-20003, 'ERRO: A QUANTIDADE A SER AUMENTADA DEVE SER MAIOR QUE ZERO.');
+    WHEN QNT_MENOR_ZERO THEN
+        RAISE_APPLICATION_ERROR(-20002, 'ERRO: PRODUTO NÃO ENCONTRADO.');
+    WHEN OTHERS THEN
+        ROLLBACK;
+        RAISE;
+END AUMENTA_ESTOQUE;
+/
+
+--teste da procedure de reposição
+--BEGIN
+    --DBMS_OUTPUT.PUT_LINE('--- Resultado 2.1: Executando Aviso de Reposição Inicial ---');
+    --AVISO_REPOSICAO;
+--END;
+--/
+
+
+--BEGIN
+    --DBMS_OUTPUT.PUT_LINE('--- Resultado 2.4: Executando Aviso com Estoque Baixo ---');
+    --AVISO_REPOSICAO;
+--END;
+--/
+
+SET SERVEROUTPUT ON
+--BEGIN
+    --AUMENTA_ESTOQUE(1, 20);
+    --DBMS_OUTPUT.PUT_LINE('Resultado 2.6: Procedure AUMENTA_ESTOQUE executada.');
+--END;
+--/  
+
+--BEGIN
+    --REAJUSTA_SALARIOS(10);
+    --DBMS_OUTPUT.PUT_LINE('Resultado 3.1: Salários reajustados via Cursor com sucesso.');
+--END;
+--/
+
+--DECLARE
+    --v_sessao_teste Sessao%ROWTYPE;
+--BEGIN
+    --SELECT * INTO v_sessao_teste FROM Sessao WHERE ID_SESSAO = 1;
+    
+    --Fecha_Conta(v_sessao_teste);
+    
+    --DBMS_OUTPUT.PUT_LINE('--- Resultado 4.2: Resumo do Cupom Fiscal (IN OUT) ---');
+    --DBMS_OUTPUT.PUT_LINE('Sessão ID: ' || v_sessao_teste.ID_SESSAO);
+    --DBMS_OUTPUT.PUT_LINE('Data de Encerramento definida: ' || TO_CHAR(v_sessao_teste.Fim, 'DD/MM/YYYY HH24:MI:SS'));
+    --DBMS_OUTPUT.PUT_LINE('Valor Líquido Final com Desconto Aplicado: R$ ' || v_sessao_teste.Valor_Total);
+--END;
+--/
+
+--BEGIN
+    
+    exec CANCELA_SESSAO(1);
+    --DBMS_OUTPUT.PUT_LINE('Resultado 6.1: Sessão cancelada e transações validadas (Estorno e Deleção).');
+--END;
+--/
